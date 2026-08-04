@@ -6,9 +6,11 @@ import GoogleSignIn
 import UserNotifications
 import WebKit
 import StoreKit
+import AuthenticationServices
+import CryptoKit
 
 @UIApplicationMain
-class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, UNUserNotificationCenterDelegate, SKProductsRequestDelegate, SKPaymentTransactionObserver {
+class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, UNUserNotificationCenterDelegate, SKProductsRequestDelegate, SKPaymentTransactionObserver, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
 
     var window: UIWindow?
     private weak var webView: WKWebView?
@@ -17,8 +19,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
     private var didInstallGoogleSignInBridge = false
     private var hasCompletedInitialActivation = false
     private var googleSignInInProgress = false
+    private var appleSignInInProgress = false
+    private var currentAppleSignInNonce: String?
     private var blankWebViewRecoveryAttempts = 0
     private let googleSignInMessageHandler = "RepairSyncIOSGoogleSignIn"
+    private let appleSignInMessageHandler = "RepairSyncIOSAppleSignIn"
     private let externalBrowserMessageHandler = "RepairSyncExternalBrowser"
     private let iapMessageHandler = "RepairSyncIOSIAP"
     private let iosWrapperClassName = "repairsync-ios-wrapper"
@@ -128,6 +133,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
             return
         }
 
+        if message.name == appleSignInMessageHandler {
+            startNativeAppleSignIn()
+            return
+        }
+
         if message.name == externalBrowserMessageHandler,
            let body = message.body as? [String: Any],
            let urlString = body["url"] as? String,
@@ -195,12 +205,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
         )
         userContentController.addUserScript(
             WKUserScript(
+                source: nativeAppleSignInShim(),
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: false
+            )
+        )
+        userContentController.addUserScript(
+            WKUserScript(
                 source: nativeIAPShim(),
                 injectionTime: .atDocumentEnd,
                 forMainFrameOnly: false
             )
         )
         userContentController.add(self, name: googleSignInMessageHandler)
+        userContentController.add(self, name: appleSignInMessageHandler)
         userContentController.add(self, name: externalBrowserMessageHandler)
         userContentController.add(self, name: iapMessageHandler)
         webView.scrollView.contentInsetAdjustmentBehavior = .never
@@ -209,6 +227,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
         webView.evaluateJavaScript(externalBrowserShim(), completionHandler: nil)
         webView.evaluateJavaScript(nativeIOSLayoutShim(), completionHandler: nil)
         webView.evaluateJavaScript(nativeGoogleSignInShim(), completionHandler: nil)
+        webView.evaluateJavaScript(nativeAppleSignInShim(), completionHandler: nil)
         webView.evaluateJavaScript(nativeIAPShim(), completionHandler: nil)
         didInstallGoogleSignInBridge = true
         applyPendingNavigationIfNeeded()
@@ -391,6 +410,140 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
         DispatchQueue.main.async {
             self.webView?.evaluateJavaScript(script, completionHandler: nil)
         }
+    }
+
+    private func startNativeAppleSignIn() {
+        guard !appleSignInInProgress else {
+            return
+        }
+
+        let nonce = randomNonceString()
+        currentAppleSignInNonce = nonce
+        appleSignInInProgress = true
+
+        let provider = ASAuthorizationAppleIDProvider()
+        let request = provider.createRequest()
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = sha256(nonce)
+
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests()
+    }
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        return window ?? ASPresentationAnchor()
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        defer {
+            appleSignInInProgress = false
+        }
+
+        guard let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+            notifyWebAppleSignInFailed("Apple did not return a valid credential.")
+            return
+        }
+
+        guard let nonce = currentAppleSignInNonce else {
+            notifyWebAppleSignInFailed("Apple sign-in nonce was not available.")
+            return
+        }
+
+        guard let tokenData = appleIDCredential.identityToken,
+              let idToken = String(data: tokenData, encoding: .utf8) else {
+            notifyWebAppleSignInFailed("Apple did not return an ID token.")
+            return
+        }
+
+        currentAppleSignInNonce = nil
+        finishWebAppleSignIn(
+            idToken: idToken,
+            rawNonce: nonce,
+            email: appleIDCredential.email,
+            fullName: appleIDCredential.fullName
+        )
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        appleSignInInProgress = false
+        currentAppleSignInNonce = nil
+        notifyWebAppleSignInFailed(error.localizedDescription)
+    }
+
+    private func finishWebAppleSignIn(idToken: String, rawNonce: String, email: String?, fullName: PersonNameComponents?) {
+        let displayName = [fullName?.givenName, fullName?.familyName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        let script = """
+        (function() {
+          if (typeof window.RepairSyncFinishNativeAppleSignIn !== 'function') {
+            \(nativeAppleSignInShim())
+          }
+          window.RepairSyncFinishNativeAppleSignIn(
+            \(javascriptString(idToken)),
+            \(javascriptString(rawNonce)),
+            \(email.map { javascriptString($0) } ?? "null"),
+            \(displayName.isEmpty ? "null" : javascriptString(displayName))
+          );
+        })();
+        """
+        DispatchQueue.main.async {
+            self.webView?.evaluateJavaScript(script) { _, error in
+                if let error {
+                    NSLog("RepairSync Apple Sign-In: web credential handoff failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func notifyWebAppleSignInFailed(_ message: String) {
+        let script = """
+        window.dispatchEvent(new CustomEvent('RepairSyncNativeAppleSignInFailed', {
+          detail: { message: \(javascriptString(message)) }
+        }));
+        console.error('RepairSync native Apple Sign-In failed:', \(javascriptString(message)));
+        """
+        DispatchQueue.main.async {
+            self.webView?.evaluateJavaScript(script, completionHandler: nil)
+        }
+    }
+
+    private func randomNonceString(length: Int = 32) -> String {
+        precondition(length > 0)
+        let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        var remainingLength = length
+
+        while remainingLength > 0 {
+            var randoms = [UInt8](repeating: 0, count: 16)
+            let status = SecRandomCopyBytes(kSecRandomDefault, randoms.count, &randoms)
+            if status != errSecSuccess {
+                fatalError("Unable to generate secure random nonce. SecRandomCopyBytes failed with OSStatus \(status)")
+            }
+
+            randoms.forEach { random in
+                if remainingLength == 0 {
+                    return
+                }
+
+                if random < UInt8(charset.count) {
+                    result.append(charset[Int(random)])
+                    remainingLength -= 1
+                }
+            }
+        }
+
+        return result
+    }
+
+    private func sha256(_ input: String) -> String {
+        let inputData = Data(input.utf8)
+        let hashedData = SHA256.hash(data: inputData)
+        return hashedData.compactMap { String(format: "%02x", $0) }.joined()
     }
 
     private func javascriptString(_ value: String) -> String {
@@ -971,6 +1124,98 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
             ].filter(Boolean).join(" ").toLowerCase();
             if (label.indexOf("google") === -1) return;
             if (!window.RepairSyncNativeGoogleSignIn()) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+          }, true);
+        })();
+        """
+    }
+
+    private func nativeAppleSignInShim() -> String {
+        return """
+        (function() {
+          if (window.__repairSyncIOSNativeAppleShim) return;
+          window.__repairSyncIOSNativeAppleShim = true;
+
+          var firebaseConfig = {
+            apiKey: "AIzaSyAzzoL9F21l88FLG1MjojLtu4eRfeGKl3U",
+            authDomain: "gen-lang-client-0477801246.firebaseapp.com",
+            projectId: "gen-lang-client-0477801246",
+            storageBucket: "gen-lang-client-0477801246.firebasestorage.app",
+            messagingSenderId: "854444042755",
+            appId: "1:854444042755:web:9ff42c28d0c8dddee17c36"
+          };
+
+          async function loadFirebaseConfig() {
+            if (window.__repairSyncFirebaseConfig) {
+              return window.__repairSyncFirebaseConfig;
+            }
+            try {
+              var response = await fetch("/firebase-applet-config.json", { cache: "no-store" });
+              if (response.ok) {
+                window.__repairSyncFirebaseConfig = await response.json();
+                console.info("RepairSync loaded live Firebase config");
+                return window.__repairSyncFirebaseConfig;
+              }
+            } catch (error) {
+              console.warn("RepairSync failed to load live Firebase config", error);
+            }
+            window.__repairSyncFirebaseConfig = firebaseConfig;
+            return window.__repairSyncFirebaseConfig;
+          }
+
+          async function signWebFirebaseWithApple(idToken, rawNonce, email, displayName) {
+            var appModule = await import("https://www.gstatic.com/firebasejs/12.12.0/firebase-app.js");
+            var authModule = await import("https://www.gstatic.com/firebasejs/12.12.0/firebase-auth.js");
+            var resolvedFirebaseConfig = await loadFirebaseConfig();
+            var app = appModule.getApps().length ? appModule.getApp() : appModule.initializeApp(resolvedFirebaseConfig);
+            var auth = authModule.getAuth(app);
+            var provider = new authModule.OAuthProvider("apple.com");
+            var credential = provider.credential({
+              idToken: idToken,
+              rawNonce: rawNonce
+            });
+            var result = await authModule.signInWithCredential(auth, credential);
+            if (displayName && result && result.user && !result.user.displayName && authModule.updateProfile) {
+              try {
+                await authModule.updateProfile(result.user, { displayName: displayName });
+              } catch (profileError) {
+                console.warn("RepairSync could not update Apple display name", profileError);
+              }
+            }
+            window.location.reload();
+          }
+
+          window.RepairSyncFinishNativeAppleSignIn = function(idToken, rawNonce, email, displayName) {
+            signWebFirebaseWithApple(idToken, rawNonce, email, displayName).catch(function(error) {
+              console.error("RepairSync web Firebase Apple sign-in failed:", error);
+              window.dispatchEvent(new CustomEvent("RepairSyncNativeAppleSignInFailed", {
+                detail: { message: error && error.message ? error.message : String(error) }
+              }));
+            });
+          };
+
+          window.RepairSyncNativeAppleSignIn = function() {
+            if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers.RepairSyncIOSAppleSignIn) {
+              return false;
+            }
+            window.webkit.messageHandlers.RepairSyncIOSAppleSignIn.postMessage({ type: "appleSignIn" });
+            return true;
+          };
+
+          document.addEventListener("click", function(event) {
+            var target = event.target && event.target.closest ? event.target.closest("button,a,[role='button'],input[type='button'],input[type='submit']") : null;
+            if (!target) return;
+            var label = [
+              target.innerText,
+              target.textContent,
+              target.value,
+              target.getAttribute && target.getAttribute("aria-label"),
+              target.getAttribute && target.getAttribute("title")
+            ].filter(Boolean).join(" ").toLowerCase();
+            if (label.indexOf("apple") === -1) return;
+            if (!window.RepairSyncNativeAppleSignIn()) return;
             event.preventDefault();
             event.stopPropagation();
             event.stopImmediatePropagation();

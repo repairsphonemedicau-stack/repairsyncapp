@@ -152,15 +152,15 @@ export function PaymentsPage() {
 
     const handleRestoredPurchase = (event: CustomEvent<NativeIAPPurchaseResult>) => {
       if (!event.detail.restored) return;
-      void completeApplePurchase(event.detail, user.uid, user.email || null, true).catch(
-        (error: any) => {
+      void completeApplePurchase(event.detail, user.uid, user.email || null, true)
+        .catch((error: any) => {
           toast.error(
             error?.response?.data?.error ||
               error?.message ||
                 "Unable to restore Apple subscription.",
           );
-        },
-      );
+        })
+        .finally(() => setLoadingPlan(null));
     };
 
     window.addEventListener(
