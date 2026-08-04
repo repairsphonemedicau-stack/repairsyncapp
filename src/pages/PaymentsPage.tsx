@@ -207,7 +207,7 @@ export function PaymentsPage() {
 
     const iap = window.RepairSyncIAP;
     if (!canUseAppleIAP || !iap?.restore) {
-      toast.error("Apple subscription restore is only available in the iPhone app.");
+      toast.error("Apple subscription restore is only available in the Apple App Store app.");
       return;
     }
 
@@ -374,9 +374,9 @@ export function PaymentsPage() {
               Activate your workspace subscription
             </h1>
             <p className="text-sm text-zinc-400 mt-3 max-w-2xl">
-              On iPhone, subscriptions use Apple in-app purchase. Other
-              platforms use Stripe checkout and return you to RepairSync after
-              activation.
+              In Apple App Store builds, subscriptions use Apple in-app purchase.
+              Other platforms use Stripe checkout and return you to RepairSync
+              after activation.
             </p>
             {canUseAppleIAP && user && !user.isAnonymous ? (
               <button

@@ -17,6 +17,11 @@
     "cap:sync": "cap sync && npm run ios:spm:fix",
     "cap:open:android": "cap open android",
     "cap:open:ios": "cap open ios",
+    "mac:install": "npm install --prefix macos-shell",
+    "mac:start": "npm run start --prefix macos-shell",
+    "mac:dmg": "npm run dist:dmg --prefix macos-shell",
+    "mac:mas": "npm run dist:mas --prefix macos-shell",
+    "mac:all": "npm run dist:all --prefix macos-shell",
     "twa:init": "bash scripts/twa-init.sh",
     "twa:build": "bash scripts/twa-build.sh"
   },

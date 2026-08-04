@@ -1,0 +1,74 @@
+{
+  "name": "repairsync-macos-shell",
+  "version": "1.0.0",
+  "private": true,
+  "description": "macOS DMG wrapper for RepairSync",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg",
+    "dist:dmg": "electron-builder --mac dmg",
+    "dist:mas": "electron-builder --mac mas --universal",
+    "dist:all": "electron-builder --mac dmg mas --universal"
+  },
+  "build": {
+    "appId": "com.nemeanpartnersptyltd.repairsyncapp",
+    "productName": "RepairSync",
+    "buildVersion": "1.0.0",
+    "protocols": [
+      {
+        "name": "RepairSync",
+        "schemes": [
+          "repairsync"
+        ]
+      }
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "loading.html",
+      "package.json",
+      "build/icon.png"
+    ],
+    "mac": {
+      "category": "public.app-category.business",
+      "icon": "build/icon.png",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "target": [
+        "dmg"
+      ]
+    },
+    "mas": {
+      "type": "distribution",
+      "category": "public.app-category.business",
+      "icon": "build/icon.png",
+      "hardenedRuntime": false,
+      "entitlements": "config/entitlements.mas.plist",
+      "entitlementsInherit": "config/entitlements.mas.inherit.plist",
+      "preAutoEntitlements": false,
+      "target": [
+        "mas"
+      ]
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12"
+  }
+}
