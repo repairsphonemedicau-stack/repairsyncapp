@@ -69,9 +69,13 @@ mobileMessageRouter.post('/api/mobilemessage/send', async (req, res) => {
       (!integrationConfig.mobileMessageEnabled || !hasUsableMobileMessage(integrationConfig)) &&
       (!integrationConfig.smsRelayEnabled || !hasUsableSmsRelay(integrationConfig))
     ) {
+      const senderStatus = integrationConfig.smsSenderStatus || 'not_started';
       return res.status(400).json({
-        error: "Connect MobileMessage Gateway in Settings > Integrations before sending SMS.",
+        error: senderStatus === 'pending'
+          ? "SMS Sender ID registration is pending approval before this company can send SMS."
+          : "Request and activate a company SMS Sender ID in Settings > Integrations before sending SMS.",
         integrationRequired: true,
+        smsSenderStatus: senderStatus,
       });
     }
     const result = await sendMobileMessage(to, message, ticket_id, custom_ref, customer_id, integrationConfig);

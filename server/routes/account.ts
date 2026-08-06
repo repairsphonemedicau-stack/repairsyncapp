@@ -9,6 +9,7 @@ import { FieldValue, getFirestore as getAdminFirestore } from 'firebase-admin/fi
 export const accountRouter = Router();
 
 import { getServerAuthPromise, getServerDb } from '../firebase.js';
+import { companyHasProfessionalAccess } from '../services/companyIntegrations.js';
 
 const getDb = () => getServerDb();
 
@@ -46,6 +47,21 @@ const checkAdmin = (req: any, res: any, next: any) => {
   // Simplification: In a real app check role from Firestore or Custom Claims
   const role = req.headers['x-user-role'];
   if (role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+};
+
+const APP_ADMIN_EMAILS = new Set(
+  String(process.env.REPAIRSYNC_APP_ADMIN_EMAILS || 'christinalucas1216@gmail.com,nemeanpartnersptyltd@gmail.com')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+const checkAppAdmin = (req: any, res: any, next: any) => {
+  const email = String(req.headers['x-user-email'] || req.body?.email || '').trim().toLowerCase();
+  if (!APP_ADMIN_EMAILS.has(email)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   next();
@@ -95,6 +111,8 @@ async function ensureCompanyMessagingProvision(db: any, companyId: string, actor
       ? settingsSnap.exists()
       : Boolean(settingsSnap?.exists);
   const existing = settingsExists ? settingsSnap.data() : {};
+  const approvedSenderId = String(existing.smsSenderApprovedId || '').trim();
+  const senderActive = existing.smsSenderStatus === 'active' && Boolean(approvedSenderId);
   const credential = existing.managedMessagingApiKeyHash && existing.managedMessagingAccountId
     ? {
         accountId: String(existing.managedMessagingAccountId),
@@ -104,11 +122,11 @@ async function ensureCompanyMessagingProvision(db: any, companyId: string, actor
     : createCompanyMessagingCredential(safeCompanyId);
 
   const next = {
-    mobileMessageEnabled: true,
-    smsRelayEnabled: true,
+    mobileMessageEnabled: senderActive,
+    smsRelayEnabled: senderActive,
     mobileMessageUsername: '',
     mobileMessagePassword: '',
-    mobileMessageSenderId: 'RepairSync',
+    mobileMessageSenderId: approvedSenderId,
     repairShoprSubdomain: '',
     repairShoprApiKey: '',
     managedMessagingEnabled: true,
@@ -120,6 +138,9 @@ async function ensureCompanyMessagingProvision(db: any, companyId: string, actor
     managedMessagingApiKeyCreatedAt: existing.managedMessagingApiKeyCreatedAt || FieldValue.serverTimestamp(),
     managedMessagingConfiguredAt: FieldValue.serverTimestamp(),
     managedMessagingConfiguredBy: actorUid,
+    smsSenderStatus: existing.smsSenderStatus || 'not_started',
+    smsSenderRequestedId: existing.smsSenderRequestedId || '',
+    smsSenderApprovedId: approvedSenderId,
     ...(options.includePhone !== false
       ? {
           maxotelEnabled: true,
@@ -143,17 +164,28 @@ async function ensureCompanyMessagingProvision(db: any, companyId: string, actor
   }).catch(() => {});
 
   return {
-    mobileMessageEnabled: true,
-    smsRelayEnabled: true,
-    mobileMessageSenderId: 'RepairSync',
+    mobileMessageEnabled: senderActive,
+    smsRelayEnabled: senderActive,
+    mobileMessageSenderId: approvedSenderId,
     maxotelEnabled: Boolean(options.includePhone !== false || existing.maxotelEnabled),
     managedMessagingEnabled: true,
     managedMessagingMode: 'company_generated_account',
     managedMessagingProvider: 'repairsync_company_messaging',
     managedMessagingAccountId: credential.accountId,
     managedMessagingApiKeyLast4: credential.apiKeyLast4,
+    smsSenderStatus: existing.smsSenderStatus || 'not_started',
+    smsSenderRequestedId: existing.smsSenderRequestedId || '',
+    smsSenderApprovedId: approvedSenderId,
     managedMaxotelEnabled: Boolean(options.includePhone !== false || existing.managedMaxotelEnabled),
   };
+}
+
+function textField(value: unknown, maxLength = 160) {
+  return String(value || '').trim().slice(0, maxLength);
+}
+
+function normalizeSenderId(value: unknown) {
+  return textField(value, 11).replace(/[^a-zA-Z0-9]/g, '');
 }
 
 async function createEmailPasswordUser(email: string, password: string) {
@@ -191,6 +223,108 @@ accountRouter.post('/api/company/provision-messaging', checkAuth, checkAdmin, as
     res.json({ success: true, integrations });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to provision company messaging' });
+  }
+});
+
+accountRouter.post('/api/company/sms-sender-registration', checkAuth, async (req: any, res: any) => {
+  try {
+    const db = getProvisioningDb();
+    const companyId = String(req.body.companyId || req.headers['x-company-id'] || '').trim();
+    if (!companyId) return res.status(400).json({ error: 'Missing company ID' });
+    if (!(await companyHasProfessionalAccess(db, companyId, req.user.uid))) {
+      return res.status(402).json({
+        error: 'Professional subscription required to request SMS Sender ID registration.',
+        upgradeRequired: true,
+        requiredPlan: 'pro',
+      });
+    }
+
+    const senderId = normalizeSenderId(req.body.senderId);
+    if (senderId.length < 3) {
+      return res.status(400).json({ error: 'Sender ID must be at least 3 alphanumeric characters.' });
+    }
+
+    const registration = {
+      abn: textField(req.body.abn, 20),
+      legalBusinessName: textField(req.body.legalBusinessName, 120),
+      contactFirstName: textField(req.body.contactFirstName, 80),
+      contactLastName: textField(req.body.contactLastName, 80),
+      contactEmail: textField(req.body.contactEmail || req.headers['x-user-email'], 160).toLowerCase(),
+      businessStreetAddress: textField(req.body.businessStreetAddress, 180),
+      addressLine2: textField(req.body.addressLine2, 180),
+      suburb: textField(req.body.suburb, 80),
+      state: textField(req.body.state, 40),
+      postcode: textField(req.body.postcode, 12),
+      website: textField(req.body.website, 180),
+      businessPhoneNumber: textField(req.body.businessPhoneNumber, 40),
+      senderId,
+      senderIdContains: textField(req.body.senderIdContains, 80),
+      applyingOnBehalf: Boolean(req.body.applyingOnBehalf),
+      authorisationConfirmed: Boolean(req.body.authorisationConfirmed),
+    };
+
+    const required = [
+      ['legalBusinessName', 'Legal business / brand name'],
+      ['contactFirstName', 'Contact first name'],
+      ['contactLastName', 'Contact last name'],
+      ['contactEmail', 'Contact email'],
+      ['businessStreetAddress', 'Business street address'],
+      ['suburb', 'Suburb / City'],
+      ['state', 'State / Territory'],
+      ['postcode', 'Postcode'],
+      ['website', 'Website'],
+      ['businessPhoneNumber', 'Business phone number'],
+      ['senderIdContains', 'Sender ID contains'],
+    ] as const;
+    const missing = required.find(([key]) => !registration[key]);
+    if (missing) return res.status(400).json({ error: `${missing[1]} is required.` });
+    if (!registration.authorisationConfirmed) {
+      return res.status(400).json({ error: 'Authorisation confirmation is required.' });
+    }
+
+    const companyRef = db.collection('companies').doc(companyId);
+    const settingsRef = companyRef.collection('settings').doc('integrations');
+    const requestRef = db.collection('smsSenderRequests').doc();
+    const provision = await ensureCompanyMessagingProvision(db, companyId, req.user.uid, { includePhone: true });
+    const responsePatch = {
+      ...provision,
+      mobileMessageEnabled: false,
+      smsRelayEnabled: false,
+      mobileMessageSenderId: '',
+      smsSenderStatus: 'pending',
+      smsSenderRequestedId: senderId,
+      smsSenderApprovedId: '',
+      smsSenderRegistration: registration,
+      smsSenderRequestId: requestRef.id,
+    };
+    const firestorePatch = {
+      ...responsePatch,
+      smsSenderRequestedAt: FieldValue.serverTimestamp(),
+      smsSenderRequestedBy: req.user.uid,
+    };
+
+    await Promise.all([
+      settingsRef.set(firestorePatch, { merge: true }),
+      requestRef.set({
+        companyId,
+        actorUserId: req.user.uid,
+        actorEmail: textField(req.headers['x-user-email'], 160).toLowerCase(),
+        status: 'pending',
+        registration,
+        requestedAt: FieldValue.serverTimestamp(),
+      }),
+      companyRef.collection('audit_logs').add({
+        action: 'SMS_SENDER_ID_REQUESTED',
+        actorUserId: req.user.uid,
+        senderId,
+        requestId: requestRef.id,
+        timestamp: FieldValue.serverTimestamp(),
+      }).catch(() => {}),
+    ]);
+
+    res.json({ success: true, integrations: responsePatch });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to submit SMS Sender ID request' });
   }
 });
 
@@ -579,6 +713,67 @@ accountRouter.post('/api/integration-requests', checkAuth, async (req: any, res:
   }
 });
 
+accountRouter.post('/api/support/tickets', checkAuth, async (req: any, res: any) => {
+  try {
+    const db = getDb();
+    const userId = req.user.uid;
+    const companyId = String(req.body.companyId || req.headers['x-company-id'] || '').trim() || 'unknown';
+    const subject = textField(req.body.subject, 140);
+    const message = String(req.body.message || '').trim().slice(0, 4000);
+    const priority = ['normal', 'urgent'].includes(req.body.priority) ? req.body.priority : 'normal';
+    const email = String(req.body.email || req.headers['x-user-email'] || '').trim().toLowerCase();
+
+    if (!subject || subject.length < 3) return res.status(400).json({ error: 'Support subject is required.' });
+    if (!message || message.length < 8) return res.status(400).json({ error: 'Please add a support message.' });
+
+    const payload = {
+      subject,
+      message,
+      priority,
+      status: 'open',
+      companyId,
+      companyName: req.body.companyName || null,
+      userId,
+      email: email || null,
+      lastReplyFrom: 'user',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    const ticketRef = await addDoc(collection(db, 'supportTickets'), payload);
+    await addDoc(collection(db, 'supportTickets', ticketRef.id, 'replies'), {
+      body: message,
+      authorType: 'user',
+      authorUserId: userId,
+      authorEmail: email || null,
+      createdAt: serverTimestamp(),
+    });
+    res.json({ success: true, id: ticketRef.id });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to create support ticket' });
+  }
+});
+
+accountRouter.get('/api/support/tickets', checkAuth, async (req: any, res: any) => {
+  try {
+    const db = getDb();
+    const companyId = String(req.headers['x-company-id'] || req.query.companyId || '').trim();
+    if (!companyId) return res.status(400).json({ error: 'Missing company ID' });
+    const q = query(collection(db, 'supportTickets'), where('companyId', '==', companyId), orderBy('updatedAt', 'desc'));
+    const snapshot = await getDocs(q);
+    const tickets = await Promise.all(snapshot.docs.map(async (ticketDoc) => {
+      const repliesSnap = await getDocs(query(collection(db, 'supportTickets', ticketDoc.id, 'replies'), orderBy('createdAt', 'asc'))).catch(() => ({ docs: [] } as any));
+      return {
+        id: ticketDoc.id,
+        ...ticketDoc.data(),
+        replies: repliesSnap.docs.map((replyDoc: any) => ({ id: replyDoc.id, ...replyDoc.data() })),
+      };
+    }));
+    res.json({ tickets });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to load support tickets' });
+  }
+});
+
 accountRouter.get('/api/admin/integration-requests', checkAuth, checkAdmin, async (_req: any, res: any) => {
   try {
     const db = getDb();
@@ -605,6 +800,141 @@ accountRouter.post('/api/admin/integration-requests/:id/status', checkAuth, chec
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+accountRouter.get('/api/app-admin/portal-summary', checkAuth, checkAppAdmin, async (_req: any, res: any) => {
+  try {
+    const db = getProvisioningDb();
+    const [companiesSnap, integrationRequestsSnap, smsSenderRequestsSnap, supportTicketsSnap] = await Promise.all([
+      db.collection('companies').limit(200).get(),
+      db.collection('integrationRequests').orderBy('createdAt', 'desc').limit(100).get().catch(() => db.collection('integrationRequests').limit(100).get()),
+      db.collection('smsSenderRequests').orderBy('requestedAt', 'desc').limit(100).get().catch(() => db.collection('smsSenderRequests').limit(100).get()),
+      db.collection('supportTickets').orderBy('updatedAt', 'desc').limit(100).get().catch(() => db.collection('supportTickets').limit(100).get()),
+    ]);
+
+    const companies = await Promise.all(companiesSnap.docs.map(async (companyDoc: any) => {
+      const [usersSnap, integrationsSnap] = await Promise.all([
+        companyDoc.ref.collection('users').limit(100).get().catch(() => ({ size: 0 })),
+        companyDoc.ref.collection('settings').doc('integrations').get().catch(() => null),
+      ]);
+      const data = companyDoc.data() || {};
+      const integrations = integrationsSnap?.exists ? integrationsSnap.data() : {};
+      return {
+        id: companyDoc.id,
+        companyName: data.companyName || data.name || companyDoc.id,
+        subscriptionPlan: data.subscriptionPlan || null,
+        subscriptionStatus: data.subscriptionStatus || null,
+        subscriptionActive: Boolean(data.subscriptionActive),
+        billingOwnerUid: data.billingOwnerUid || null,
+        userCount: usersSnap.size || 0,
+        smsSenderStatus: integrations?.smsSenderStatus || 'not_started',
+        smsSenderRequestedId: integrations?.smsSenderRequestedId || '',
+        smsSenderApprovedId: integrations?.smsSenderApprovedId || '',
+      };
+    }));
+
+    res.json({
+      companies,
+      integrationRequests: integrationRequestsSnap.docs.map((docSnap: any) => ({ id: docSnap.id, ...docSnap.data() })),
+      smsSenderRequests: smsSenderRequestsSnap.docs.map((docSnap: any) => ({ id: docSnap.id, ...docSnap.data() })),
+      supportTickets: await Promise.all(supportTicketsSnap.docs.map(async (docSnap: any) => {
+        const repliesSnap = await docSnap.ref.collection('replies').orderBy('createdAt', 'asc').limit(100).get().catch(() => ({ docs: [] }));
+        return {
+          id: docSnap.id,
+          ...docSnap.data(),
+          replies: repliesSnap.docs.map((replyDoc: any) => ({ id: replyDoc.id, ...replyDoc.data() })),
+        };
+      })),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to load app admin portal' });
+  }
+});
+
+accountRouter.post('/api/app-admin/support-tickets/:id/replies', checkAuth, checkAppAdmin, async (req: any, res: any) => {
+  try {
+    const db = getProvisioningDb();
+    const body = String(req.body.body || '').trim().slice(0, 4000);
+    const status = ['open', 'waiting', 'resolved'].includes(req.body.status) ? req.body.status : 'waiting';
+    if (body.length < 2) return res.status(400).json({ error: 'Reply message is required.' });
+
+    const ticketRef = db.collection('supportTickets').doc(req.params.id);
+    const ticketSnap = await ticketRef.get();
+    if (!ticketSnap.exists) return res.status(404).json({ error: 'Support ticket not found' });
+
+    await ticketRef.collection('replies').add({
+      body,
+      authorType: 'admin',
+      authorUserId: req.user.uid,
+      authorEmail: textField(req.headers['x-user-email'], 160).toLowerCase(),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    await ticketRef.set({
+      status,
+      lastReplyFrom: 'admin',
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to reply to support ticket' });
+  }
+});
+
+accountRouter.post('/api/app-admin/sms-sender-requests/:id/status', checkAuth, checkAppAdmin, async (req: any, res: any) => {
+  try {
+    const db = getProvisioningDb();
+    const status = ['pending', 'reviewing', 'active', 'rejected'].includes(req.body.status)
+      ? req.body.status
+      : 'reviewing';
+    const approvedSenderId = normalizeSenderId(req.body.approvedSenderId || req.body.senderId || '');
+    const requestRef = db.collection('smsSenderRequests').doc(req.params.id);
+    const requestSnap = await requestRef.get();
+    if (!requestSnap.exists) return res.status(404).json({ error: 'Sender ID request not found' });
+
+    const request = requestSnap.data() || {};
+    const companyId = String(request.companyId || '').trim();
+    if (!companyId) return res.status(400).json({ error: 'Sender ID request is missing company ID' });
+    if (status === 'active' && approvedSenderId.length < 3) {
+      return res.status(400).json({ error: 'Approved Sender ID is required to activate SMS.' });
+    }
+
+    const update = {
+      status,
+      approvedSenderId: status === 'active' ? approvedSenderId : '',
+      adminNotes: textField(req.body.adminNotes, 500),
+      reviewedBy: req.user.uid,
+      reviewedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    await requestRef.set(update, { merge: true });
+
+    const integrationPatch = {
+      smsSenderStatus: status,
+      smsSenderApprovedId: status === 'active' ? approvedSenderId : '',
+      mobileMessageSenderId: status === 'active' ? approvedSenderId : '',
+      mobileMessageEnabled: status === 'active',
+      smsRelayEnabled: status === 'active',
+      maxotelEnabled: status === 'active',
+      managedMessagingEnabled: true,
+      managedMessagingProvider: 'repairsync_company_messaging',
+      smsSenderReviewedBy: req.user.uid,
+      smsSenderReviewedAt: FieldValue.serverTimestamp(),
+      smsSenderAdminNotes: textField(req.body.adminNotes, 500),
+    };
+    await db.collection('companies').doc(companyId).collection('settings').doc('integrations').set(integrationPatch, { merge: true });
+    await db.collection('companies').doc(companyId).collection('audit_logs').add({
+      action: status === 'active' ? 'SMS_SENDER_ID_ACTIVATED' : 'SMS_SENDER_ID_STATUS_UPDATED',
+      actorUserId: req.user.uid,
+      senderId: approvedSenderId || request.registration?.senderId || null,
+      status,
+      requestId: req.params.id,
+      timestamp: FieldValue.serverTimestamp(),
+    }).catch(() => {});
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to update sender request' });
   }
 });
 

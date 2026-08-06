@@ -1450,6 +1450,7 @@ export function PublicLandingPage({ onLogin, onAppleLogin, onGuestLogin }: Publi
               <li><a href="/privacy-policy" className="text-zinc-400 hover:text-zinc-200 transition-colors">Privacy Policy</a></li>
               <li><span className="text-zinc-600">Compliance Audits</span></li>
               <li><a href="/terms" className="text-zinc-400 hover:text-zinc-200 transition-colors">Terms of Use</a></li>
+              <li><a href="/admin/portal" className="text-zinc-400 hover:text-zinc-200 transition-colors">Admin Portal Access</a></li>
             </ul>
           </div>
 

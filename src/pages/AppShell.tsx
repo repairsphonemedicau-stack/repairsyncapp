@@ -32,6 +32,7 @@ import {
   ChevronRight,
   ClipboardCheck,
   CheckSquare,
+  HelpCircle,
 } from "lucide-react";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
 import { useAuth } from "../providers/AuthProvider";
@@ -62,6 +63,8 @@ import { TasksPage } from "./Tasks/TasksPage";
 import { ChecklistsPage } from "./Checklists/ChecklistsPage";
 import { AdminDeletionRequestsPage } from "./Admin/AdminDeletionRequestsPage";
 import { AdminIntegrationRequestsPage } from "./Admin/AdminIntegrationRequestsPage";
+import { AppAdminPortalPage } from "./Admin/AppAdminPortalPage";
+import { ClientSupportPage } from "./Support/ClientSupportPage";
 import { BottomNav } from "../components/BottomNav";
 import { useWorkflowStore } from "../store/workflowStore";
 import { PartsOrdersPage } from "./PartsOrdersPage";
@@ -76,6 +79,7 @@ import { CommandPalette } from "../features/command-palette/components/CommandPa
 import { DemoModeBanner } from "../components/DemoModeBanner";
 import { GuestRouteGuard } from "../components/GuestRouteGuard";
 import { AdminRouteGuard } from "../components/AdminRouteGuard";
+import { AppAdminRouteGuard } from "../components/AppAdminRouteGuard";
 
 import { DashboardView } from "../features/dashboard/pages/DashboardPage";
 import { TodayStatsWidget } from "../components/TodayStatsWidget";
@@ -95,6 +99,7 @@ label: "Messages", href: "/messages" },
       { icon: CheckSquare, label: "Checklists", href: "/checklists" },
       { icon: BarChart3, label: "Reports", href: "/repairs" },
       { icon: Settings, label: "Settings", href: "/settings" },
+      { icon: HelpCircle, label: "Support", href: "/support" },
     ]
   },
   {
@@ -282,8 +287,17 @@ export function AppShell() {
     return <TermsOfServiceView onClose={() => navigate("/")} />;
   }
 
-  if (location.pathname === "/support" || location.pathname === "/contact") {
+  if (location.pathname === "/contact") {
     return <SupportContactView onClose={() => navigate("/")} />;
+  }
+
+  if (location.pathname === "/admin/portal") {
+    return (
+      <AppAdminRouteGuard>
+        <Toaster position="top-right" richColors />
+        <AppAdminPortalPage />
+      </AppAdminRouteGuard>
+    );
   }
 
   if (location.pathname === "/payments" || location.pathname === "/payments/success") {
@@ -707,6 +721,7 @@ export function AppShell() {
               />
               <Route path="/inventory" element={<InventoryView />} />
               <Route path="/messages" element={<InboxView />} />
+              <Route path="/support" element={<ClientSupportPage />} />
               <Route
                 path="/settings"
                 element={

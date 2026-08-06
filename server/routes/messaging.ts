@@ -33,9 +33,13 @@ messagingRouter.post('/api/messaging/send', async (req, res) => {
         (!integrationConfig.smsRelayEnabled || !hasUsableSmsRelay(integrationConfig)) &&
         (!integrationConfig.mobileMessageEnabled || !hasUsableMobileMessage(integrationConfig))
       ) {
+        const senderStatus = integrationConfig.smsSenderStatus || 'not_started';
         return res.status(400).json({
-          error: "Connect Backend SMS Relay or MobileMessage Gateway in Settings > Integrations before sending SMS.",
+          error: senderStatus === 'pending'
+            ? "SMS Sender ID registration is pending approval before this company can send SMS."
+            : "Request and activate a company SMS Sender ID in Settings > Integrations before sending SMS.",
           integrationRequired: true,
+          smsSenderStatus: senderStatus,
         });
       }
       const transport = process.env.RCS_PROVIDER_API_KEY ? 'rcs' : 'sms';

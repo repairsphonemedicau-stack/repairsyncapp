@@ -289,7 +289,6 @@ function XeroSyncQueueMonitor() {
   );
 }
 
-import { TwilioSettingsForm } from "./TwilioSettingsForm";
 import { companyCollection, companyDoc } from "../../../lib/companyFirestore";
 
 function IntegrationActionCard({
@@ -348,13 +347,36 @@ type IntegrationCapabilities = {
   managedMaxotel: boolean;
 };
 
+const STATE_OPTIONS = ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"];
+
+const emptySenderRegistration = {
+  abn: "",
+  legalBusinessName: "",
+  contactFirstName: "",
+  contactLastName: "",
+  contactEmail: "",
+  businessStreetAddress: "",
+  addressLine2: "",
+  suburb: "",
+  state: "",
+  postcode: "",
+  website: "",
+  businessPhoneNumber: "",
+  senderId: "",
+  senderIdContains: "",
+  applyingOnBehalf: false,
+  authorisationConfirmed: false,
+};
+
 export function IntegrationsSettings() {
   const [zohoStatus, setZohoStatus] = useState<"syncing" | "active" | "inactive">("syncing");
   const [xeroStatus, setXeroStatus] = useState<"syncing" | "active" | "inactive">("syncing");
   const [requestName, setRequestName] = useState("");
   const [requestMessage, setRequestMessage] = useState("");
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
-  const [smsConfigOpen, setSmsConfigOpen] = useState(false);
+  const [senderFormOpen, setSenderFormOpen] = useState(false);
+  const [senderForm, setSenderForm] = useState(emptySenderRegistration);
+  const [isSubmittingSender, setIsSubmittingSender] = useState(false);
   const [capabilities, setCapabilities] = useState<IntegrationCapabilities>({
     managedMobileMessage: false,
     managedRepairShopr: false,
@@ -373,6 +395,9 @@ export function IntegrationsSettings() {
       settings?.integrations?.managedMessagingAccountId
   );
   const managedMaxotelAccountReady = Boolean(settings?.integrations?.managedMaxotelEnabled);
+  const smsSenderStatus = settings?.integrations?.smsSenderStatus || "not_started";
+  const smsSenderActive = smsSenderStatus === "active" && Boolean(settings?.integrations?.smsSenderApprovedId);
+  const smsSenderPending = smsSenderStatus === "pending";
 
   const requireProfessional = () => {
     toast.info("Professional subscription required", {
@@ -381,12 +406,13 @@ export function IntegrationsSettings() {
     navigate("/payments?plan=pro&interval=monthly");
   };
 
-  const mobileMessageAvailable = capabilities.managedMobileMessage;
+  const mobileMessageAvailable = capabilities.managedMobileMessage && smsSenderActive;
   const maxotelAvailable = capabilities.managedMaxotel;
-  const smsRelayAvailable = capabilities.managedMobileMessage || capabilities.managedRepairShopr;
+  const smsRelayAvailable = (capabilities.managedMobileMessage && smsSenderActive) || capabilities.managedRepairShopr;
   const mobileMessageConnected = Boolean(
     managedMessagingAccountReady &&
       settings?.integrations?.mobileMessageEnabled &&
+      smsSenderActive &&
       mobileMessageAvailable
   );
   const maxotelConnected = Boolean(
@@ -396,6 +422,7 @@ export function IntegrationsSettings() {
   const smsRelayConnected = Boolean(
     managedMessagingAccountReady &&
       settings?.integrations?.smsRelayEnabled &&
+      smsSenderActive &&
       smsRelayAvailable
   );
 
@@ -406,11 +433,7 @@ export function IntegrationsSettings() {
   };
 
   const openMessagingConfig = (title: string, description: string) => {
-    setSmsConfigOpen(true);
     toast.error(title, { description });
-    window.setTimeout(() => {
-      document.getElementById("sms-phone-integrations")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 50);
   };
 
   const updateIntegrationFlag = async (
@@ -419,6 +442,15 @@ export function IntegrationsSettings() {
   ) => {
     if (!isProfessional) {
       requireProfessional();
+      return;
+    }
+    if ((key === "mobileMessageEnabled" || key === "smsRelayEnabled") && !smsSenderActive) {
+      setSenderFormOpen(true);
+      toast.info("Sender ID required", {
+        description: smsSenderPending
+          ? "This company's Sender ID request is pending approval before live SMS can be enabled."
+          : "Submit this company's Sender ID registration before enabling live SMS.",
+      });
       return;
     }
     if (!available) {
@@ -434,8 +466,39 @@ export function IntegrationsSettings() {
     });
     await updateSettings("integrations", response.data.integrations as any);
     toast.success("Company integration provisioned", {
-      description: "A separate RepairSync account was generated for this company.",
+      description: "The company messaging account is ready. Submit a Sender ID request before sending live SMS.",
     });
+  };
+
+  const updateSenderField = (key: keyof typeof emptySenderRegistration, value: string | boolean) => {
+    setSenderForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const handleSubmitSenderRegistration = async () => {
+    if (!isProfessional) {
+      requireProfessional();
+      return;
+    }
+    try {
+      setIsSubmittingSender(true);
+      const response = await axios.post("/api/company/sms-sender-registration", {
+        ...senderForm,
+        companyId: profile?.companyId,
+      });
+      if (response.data?.integrations) {
+        await updateSettings("integrations", response.data.integrations as any);
+      }
+      toast.success("Sender ID request saved", {
+        description: "RepairSync support will register it with MobileMessage and activate SMS for this company after approval.",
+      });
+      setSenderFormOpen(false);
+    } catch (error: any) {
+      toast.error("Sender ID request failed", {
+        description: error.response?.data?.error || error.message,
+      });
+    } finally {
+      setIsSubmittingSender(false);
+    }
   };
 
   const handleToggleRcs = async () => {
@@ -486,8 +549,6 @@ export function IntegrationsSettings() {
     if (!isProfessional || !profile?.companyId || !settings?.integrations) return;
     if (
       managedMessagingAccountReady &&
-      settings.integrations.mobileMessageEnabled &&
-      settings.integrations.smsRelayEnabled &&
       managedMaxotelAccountReady
     ) {
       return;
@@ -580,6 +641,95 @@ export function IntegrationsSettings() {
 
   return (
     <div className="space-y-4">
+      <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
+        <div className="flex items-start gap-4">
+          <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${smsSenderActive ? 'bg-emerald-50 text-emerald-600' : smsSenderPending ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'}`}>
+            {smsSenderActive ? <CheckCircle2 className="w-5 h-5" /> : smsSenderPending ? <Clock className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-bold text-zinc-900">SMS Sender ID Registration</h3>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold uppercase ${smsSenderActive ? 'bg-emerald-50 text-emerald-700' : smsSenderPending ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700'}`}>
+                {smsSenderActive ? 'Active' : smsSenderPending ? 'Pending approval' : 'Required'}
+              </span>
+            </div>
+            <p className="mt-1 text-sm leading-5 text-zinc-500">
+              Professional companies submit their own sender details here. RepairSync stores the request on this company and activates MobileMessage after the sender is approved.
+            </p>
+            {settings?.integrations?.smsSenderRequestedId && (
+              <p className="mt-2 text-xs font-semibold text-zinc-600">
+                Requested Sender ID: {settings.integrations.smsSenderRequestedId}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {!senderFormOpen ? (
+          <Button
+            className="mt-4 w-full"
+            variant={smsSenderPending || smsSenderActive ? "outline" : "default"}
+            onClick={() => {
+              if (!isProfessional) return requireProfessional();
+              const saved = settings?.integrations?.smsSenderRegistration as any;
+              setSenderForm({
+                ...emptySenderRegistration,
+                ...(saved || {}),
+                contactEmail: saved?.contactEmail || user?.email || "",
+              });
+              setSenderFormOpen(true);
+            }}
+          >
+            {!isProfessional ? <Lock className="mr-2 h-4 w-4" /> : smsSenderActive ? <CheckCircle2 className="mr-2 h-4 w-4" /> : <FileText className="mr-2 h-4 w-4" />}
+            {!isProfessional ? "Switch to Professional" : smsSenderActive ? "View Sender Registration" : smsSenderPending ? "Update Pending Request" : "Request Sender ID"}
+          </Button>
+        ) : (
+          <div className="mt-5 space-y-4 rounded-2xl border border-zinc-100 bg-zinc-50 p-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400" placeholder="ABN" value={senderForm.abn} onChange={(e) => updateSenderField("abn", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400" placeholder="Legal business / brand name" value={senderForm.legalBusinessName} onChange={(e) => updateSenderField("legalBusinessName", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400" placeholder="Contact first name" value={senderForm.contactFirstName} onChange={(e) => updateSenderField("contactFirstName", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400" placeholder="Contact last name" value={senderForm.contactLastName} onChange={(e) => updateSenderField("contactLastName", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400 sm:col-span-2" placeholder="Contact email" value={senderForm.contactEmail} onChange={(e) => updateSenderField("contactEmail", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400 sm:col-span-2" placeholder="Business street address" value={senderForm.businessStreetAddress} onChange={(e) => updateSenderField("businessStreetAddress", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400 sm:col-span-2" placeholder="Address line 2 optional" value={senderForm.addressLine2} onChange={(e) => updateSenderField("addressLine2", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400" placeholder="Suburb / City" value={senderForm.suburb} onChange={(e) => updateSenderField("suburb", e.target.value)} />
+              <select className="h-10 rounded-xl border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-zinc-400" value={senderForm.state} onChange={(e) => updateSenderField("state", e.target.value)}>
+                <option value="">State / Territory</option>
+                {STATE_OPTIONS.map((state) => <option key={state} value={state}>{state}</option>)}
+              </select>
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400" placeholder="Postcode" value={senderForm.postcode} onChange={(e) => updateSenderField("postcode", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400" placeholder="Business phone number" value={senderForm.businessPhoneNumber} onChange={(e) => updateSenderField("businessPhoneNumber", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm outline-none focus:border-zinc-400 sm:col-span-2" placeholder="Website, e.g. https://yourbusiness.com.au" value={senderForm.website} onChange={(e) => updateSenderField("website", e.target.value)} />
+              <input className="h-10 rounded-xl border border-zinc-200 px-3 text-sm font-bold tracking-wide outline-none focus:border-zinc-400" placeholder="Sender ID, max 11 characters" value={senderForm.senderId} onChange={(e) => updateSenderField("senderId", e.target.value.replace(/[^a-zA-Z0-9]/g, "").slice(0, 11))} />
+              <select className="h-10 rounded-xl border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-zinc-400" value={senderForm.senderIdContains} onChange={(e) => updateSenderField("senderIdContains", e.target.value)}>
+                <option value="">Sender ID contains...</option>
+                <option value="business_name">Business or brand name</option>
+                <option value="trademark">Registered trademark</option>
+                <option value="domain">Business domain name</option>
+                <option value="abbreviation">Recognisable abbreviation</option>
+              </select>
+            </div>
+
+            <label className="flex items-start gap-3 rounded-xl bg-white p-3 text-sm text-zinc-700">
+              <input type="checkbox" className="mt-1" checked={senderForm.applyingOnBehalf} onChange={(e) => updateSenderField("applyingOnBehalf", e.target.checked)} />
+              <span>I am applying on behalf of this organisation.</span>
+            </label>
+            <label className="flex items-start gap-3 rounded-xl bg-white p-3 text-sm text-zinc-700">
+              <input type="checkbox" className="mt-1" checked={senderForm.authorisationConfirmed} onChange={(e) => updateSenderField("authorisationConfirmed", e.target.checked)} />
+              <span>I confirm these details are authorised for this Sender ID request.</span>
+            </label>
+
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setSenderFormOpen(false)}>Cancel</Button>
+              <Button className="flex-1" onClick={handleSubmitSenderRegistration} disabled={isSubmittingSender}>
+                {isSubmittingSender ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
+                Submit Request
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="grid gap-4">
         <IntegrationActionCard
           title="MobileMessage Gateway"
@@ -675,11 +825,6 @@ export function IntegrationsSettings() {
         >
           {rcsEnabled ? <><CheckCircle2 className="w-4 h-4 mr-2" /> Enabled</> : isProfessional ? 'Enable RCS' : 'Switch to Professional'}
         </Button>
-      </div>
-
-      {/* Twilio Settings */}
-      <div id="sms-phone-integrations" className="scroll-mt-24">
-        <TwilioSettingsForm expanded={smsConfigOpen} onExpandedChange={setSmsConfigOpen} />
       </div>
 
       <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm space-y-4">

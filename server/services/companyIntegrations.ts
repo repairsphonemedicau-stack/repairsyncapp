@@ -20,6 +20,9 @@ export type CompanyIntegrationConfig = {
   managedMessagingEnabled: boolean;
   managedMessagingAccountId: string;
   managedMessagingProvider: string;
+  smsSenderStatus: string;
+  smsSenderRequestedId: string;
+  smsSenderApprovedId: string;
   managedMaxotelEnabled: boolean;
 };
 
@@ -33,10 +36,13 @@ export function getManagedIntegrationCapabilities() {
 
 export function hasUsableMobileMessage(config: Partial<CompanyIntegrationConfig>) {
   const managed = getManagedIntegrationCapabilities();
+  const hasApprovedSender = config.smsSenderStatus === "active" && Boolean(asString(config.smsSenderApprovedId) || asString(config.mobileMessageSenderId));
   return Boolean(
     (asString(config.mobileMessageUsername) && asString(config.mobileMessagePassword)) ||
-      (Boolean(config.managedMessagingEnabled) && asString(config.managedMessagingAccountId)) ||
-      managed.managedMobileMessage,
+      (Boolean(config.managedMessagingEnabled) &&
+        asString(config.managedMessagingAccountId) &&
+        managed.managedMobileMessage &&
+        hasApprovedSender),
   );
 }
 
@@ -120,6 +126,7 @@ export async function getCompanyIntegrationConfig(db: any, companyId: string | n
       asString(settings.repairShoprApiKey) ||
       asString(settings.maxotelApiKey) ||
       (Boolean(settings.managedMessagingEnabled) && asString(settings.managedMessagingAccountId)) ||
+      asString(settings.smsSenderApprovedId) ||
       Boolean(settings.managedMaxotelEnabled),
   );
 
@@ -142,6 +149,9 @@ export async function getCompanyIntegrationConfig(db: any, companyId: string | n
     managedMessagingEnabled: Boolean(settings.managedMessagingEnabled),
     managedMessagingAccountId: asString(settings.managedMessagingAccountId),
     managedMessagingProvider: asString(settings.managedMessagingProvider),
+    smsSenderStatus: asString(settings.smsSenderStatus) || "not_started",
+    smsSenderRequestedId: asString(settings.smsSenderRequestedId),
+    smsSenderApprovedId: asString(settings.smsSenderApprovedId),
     managedMaxotelEnabled: Boolean(settings.managedMaxotelEnabled),
   };
 }

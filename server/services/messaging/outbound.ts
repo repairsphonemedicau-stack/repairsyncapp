@@ -120,6 +120,14 @@ export async function sendMobileMessage(
   }
 
   const usesManagedCompanyAccount = Boolean(integrationConfig?.managedMessagingEnabled && integrationConfig?.managedMessagingAccountId);
+  const approvedSenderId = String(integrationConfig?.smsSenderApprovedId || integrationConfig?.mobileMessageSenderId || '').trim();
+  if (usesManagedCompanyAccount && integrationConfig?.smsSenderStatus !== 'active') {
+    throw new Error(JSON.stringify({
+      error: 'SMS Sender ID is not active for this company yet.',
+      mobileMessageError: 'Submit the MobileMessage Sender ID request in Settings > Integrations and wait for approval before sending SMS.',
+      repairShoprError: null,
+    }));
+  }
   const username = (
     usesManagedCompanyAccount
       ? process.env.REPAIRSYNC_APP_MOBILE_MESSAGE_USERNAME || ''
@@ -132,7 +140,7 @@ export async function sendMobileMessage(
   ).trim();
   const senderId = (
     usesManagedCompanyAccount
-      ? process.env.REPAIRSYNC_APP_MOBILE_MESSAGE_SENDER_ID || integrationConfig?.mobileMessageSenderId || 'RepairSync'
+      ? approvedSenderId
       : integrationConfig?.mobileMessageSenderId || process.env.REPAIRSYNC_APP_MOBILE_MESSAGE_SENDER_ID || 'RepairSync'
   ).trim();
   const subdomain = (

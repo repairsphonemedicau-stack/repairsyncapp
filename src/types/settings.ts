@@ -73,6 +73,10 @@ export const IntegrationsSettingsSchema = z.object({
   managedMessagingProvider: z.string().optional(),
   managedMessagingAccountId: z.string().optional(),
   managedMessagingApiKeyLast4: z.string().optional(),
+  smsSenderStatus: z.enum(['not_started', 'pending', 'approved', 'active', 'rejected']).default('not_started'),
+  smsSenderRequestedId: z.string().optional(),
+  smsSenderApprovedId: z.string().optional(),
+  smsSenderRegistration: z.record(z.string(), z.any()).optional(),
   managedMaxotelEnabled: z.boolean().default(false),
   managedMaxotelMode: z.string().optional(),
 });
