@@ -77,6 +77,10 @@ export const IntegrationsSettingsSchema = z.object({
   smsSenderRequestedId: z.string().optional(),
   smsSenderApprovedId: z.string().optional(),
   smsSenderRegistration: z.record(z.string(), z.any()).optional(),
+  smsReplyNumberStatus: z.enum(['not_started', 'pending', 'active', 'rejected']).default('not_started'),
+  smsReplyNumberRequestedAt: z.any().optional(),
+  smsReplyNumberAssigned: z.string().optional(),
+  smsReplyNumberRequestId: z.string().optional(),
   managedMaxotelEnabled: z.boolean().default(false),
   managedMaxotelMode: z.string().optional(),
 });

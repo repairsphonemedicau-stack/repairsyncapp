@@ -328,6 +328,64 @@ accountRouter.post('/api/company/sms-sender-registration', checkAuth, async (req
   }
 });
 
+accountRouter.post('/api/company/sms-reply-number-request', checkAuth, async (req: any, res: any) => {
+  try {
+    const db = getProvisioningDb();
+    const companyId = String(req.body.companyId || req.headers['x-company-id'] || '').trim();
+    if (!companyId) return res.status(400).json({ error: 'Missing company ID' });
+    if (!(await companyHasProfessionalAccess(db, companyId, req.user.uid))) {
+      return res.status(402).json({
+        error: 'Professional subscription required to request a dedicated reply number.',
+        upgradeRequired: true,
+        requiredPlan: 'pro',
+      });
+    }
+
+    const requestRef = db.collection('smsReplyNumberRequests').doc();
+    const companyRef = db.collection('companies').doc(companyId);
+    const settingsRef = companyRef.collection('settings').doc('integrations');
+    const requestPayload = {
+      companyId,
+      companyName: textField(req.body.companyName, 140),
+      actorUserId: req.user.uid,
+      actorEmail: textField(req.headers['x-user-email'], 160).toLowerCase(),
+      status: 'pending',
+      preferredAreaCode: textField(req.body.preferredAreaCode, 12),
+      notes: textField(req.body.notes, 500),
+      requestedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    const integrationPatch = {
+      smsReplyNumberStatus: 'pending',
+      smsReplyNumberRequestId: requestRef.id,
+      smsReplyNumberRequestedAt: FieldValue.serverTimestamp(),
+      smsReplyNumberAssigned: '',
+    };
+
+    await Promise.all([
+      requestRef.set(requestPayload),
+      settingsRef.set(integrationPatch, { merge: true }),
+      companyRef.collection('audit_logs').add({
+        action: 'SMS_REPLY_NUMBER_REQUESTED',
+        actorUserId: req.user.uid,
+        requestId: requestRef.id,
+        timestamp: FieldValue.serverTimestamp(),
+      }).catch(() => {}),
+    ]);
+
+    res.json({
+      success: true,
+      integrations: {
+        smsReplyNumberStatus: 'pending',
+        smsReplyNumberRequestId: requestRef.id,
+        smsReplyNumberAssigned: '',
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to request reply number' });
+  }
+});
+
 accountRouter.post('/api/admin/apple-review/professional', checkAuth, checkAdmin, async (req: any, res: any) => {
   try {
     const db = getProvisioningDb();
@@ -806,10 +864,11 @@ accountRouter.post('/api/admin/integration-requests/:id/status', checkAuth, chec
 accountRouter.get('/api/app-admin/portal-summary', checkAuth, checkAppAdmin, async (_req: any, res: any) => {
   try {
     const db = getProvisioningDb();
-    const [companiesSnap, integrationRequestsSnap, smsSenderRequestsSnap, supportTicketsSnap] = await Promise.all([
+    const [companiesSnap, integrationRequestsSnap, smsSenderRequestsSnap, smsReplyNumberRequestsSnap, supportTicketsSnap] = await Promise.all([
       db.collection('companies').limit(200).get(),
       db.collection('integrationRequests').orderBy('createdAt', 'desc').limit(100).get().catch(() => db.collection('integrationRequests').limit(100).get()),
       db.collection('smsSenderRequests').orderBy('requestedAt', 'desc').limit(100).get().catch(() => db.collection('smsSenderRequests').limit(100).get()),
+      db.collection('smsReplyNumberRequests').orderBy('requestedAt', 'desc').limit(100).get().catch(() => db.collection('smsReplyNumberRequests').limit(100).get()),
       db.collection('supportTickets').orderBy('updatedAt', 'desc').limit(100).get().catch(() => db.collection('supportTickets').limit(100).get()),
     ]);
 
@@ -831,6 +890,8 @@ accountRouter.get('/api/app-admin/portal-summary', checkAuth, checkAppAdmin, asy
         smsSenderStatus: integrations?.smsSenderStatus || 'not_started',
         smsSenderRequestedId: integrations?.smsSenderRequestedId || '',
         smsSenderApprovedId: integrations?.smsSenderApprovedId || '',
+        smsReplyNumberStatus: integrations?.smsReplyNumberStatus || 'not_started',
+        smsReplyNumberAssigned: integrations?.smsReplyNumberAssigned || '',
       };
     }));
 
@@ -838,6 +899,7 @@ accountRouter.get('/api/app-admin/portal-summary', checkAuth, checkAppAdmin, asy
       companies,
       integrationRequests: integrationRequestsSnap.docs.map((docSnap: any) => ({ id: docSnap.id, ...docSnap.data() })),
       smsSenderRequests: smsSenderRequestsSnap.docs.map((docSnap: any) => ({ id: docSnap.id, ...docSnap.data() })),
+      smsReplyNumberRequests: smsReplyNumberRequestsSnap.docs.map((docSnap: any) => ({ id: docSnap.id, ...docSnap.data() })),
       supportTickets: await Promise.all(supportTicketsSnap.docs.map(async (docSnap: any) => {
         const repliesSnap = await docSnap.ref.collection('replies').orderBy('createdAt', 'asc').limit(100).get().catch(() => ({ docs: [] }));
         return {
@@ -849,6 +911,56 @@ accountRouter.get('/api/app-admin/portal-summary', checkAuth, checkAppAdmin, asy
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to load app admin portal' });
+  }
+});
+
+accountRouter.post('/api/app-admin/sms-reply-number-requests/:id/status', checkAuth, checkAppAdmin, async (req: any, res: any) => {
+  try {
+    const db = getProvisioningDb();
+    const status = ['pending', 'reviewing', 'active', 'rejected'].includes(req.body.status)
+      ? req.body.status
+      : 'reviewing';
+    const assignedNumber = textField(req.body.assignedNumber, 40);
+    const requestRef = db.collection('smsReplyNumberRequests').doc(req.params.id);
+    const requestSnap = await requestRef.get();
+    if (!requestSnap.exists) return res.status(404).json({ error: 'Reply number request not found' });
+
+    const request = requestSnap.data() || {};
+    const companyId = String(request.companyId || '').trim();
+    if (!companyId) return res.status(400).json({ error: 'Reply number request is missing company ID' });
+    if (status === 'active' && assignedNumber.length < 8) {
+      return res.status(400).json({ error: 'Assigned reply number is required to activate two-way replies.' });
+    }
+
+    await requestRef.set({
+      status,
+      assignedNumber: status === 'active' ? assignedNumber : '',
+      adminNotes: textField(req.body.adminNotes, 500),
+      reviewedBy: req.user.uid,
+      reviewedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    await db.collection('companies').doc(companyId).collection('settings').doc('integrations').set({
+      smsReplyNumberStatus: status,
+      smsReplyNumberAssigned: status === 'active' ? assignedNumber : '',
+      smsReplyNumberReviewedBy: req.user.uid,
+      smsReplyNumberReviewedAt: FieldValue.serverTimestamp(),
+      smsReplyNumberAdminNotes: textField(req.body.adminNotes, 500),
+    }, { merge: true });
+
+    await db.collection('companies').doc(companyId).collection('audit_logs').add({
+      action: status === 'active' ? 'SMS_REPLY_NUMBER_ACTIVATED' : 'SMS_REPLY_NUMBER_STATUS_UPDATED',
+      actorUserId: req.user.uid,
+      assignedNumber: status === 'active' ? assignedNumber : null,
+      status,
+      requestId: req.params.id,
+      timestamp: FieldValue.serverTimestamp(),
+    }).catch(() => {});
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to update reply number request' });
   }
 });
 
@@ -878,6 +990,78 @@ accountRouter.post('/api/app-admin/support-tickets/:id/replies', checkAuth, chec
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to reply to support ticket' });
+  }
+});
+
+accountRouter.post('/api/app-admin/companies/:companyId/admins', checkAuth, checkAppAdmin, async (req: any, res: any) => {
+  try {
+    const db = getProvisioningDb();
+    const companyId = String(req.params.companyId || '').trim();
+    const email = textField(req.body.email, 160).toLowerCase();
+    const displayName = textField(req.body.displayName, 120);
+    if (!companyId) return res.status(400).json({ error: 'Missing company ID' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Invalid email address' });
+
+    const companySnap = await db.collection('companies').doc(companyId).get();
+    const companyName = companySnap.exists
+      ? (companySnap.data()?.companyName || companySnap.data()?.name || null)
+      : null;
+    const userSnap = await db.collection('users').where('email', '==', email).limit(1).get();
+    const uid = userSnap.docs[0]?.id || null;
+    const profile = {
+      uid,
+      email,
+      displayName: displayName || null,
+      companyId,
+      companyName,
+      role: 'admin',
+      permissions: ['admin'],
+      hasAccess: true,
+      billingRequired: false,
+      subscriptionActive: true,
+      subscriptionStatus: 'active',
+      subscriptionSource: 'company_admin_assignment',
+      authMethod: req.body.authMethod || 'google',
+      invitedBy: req.user.uid,
+      invitedByEmail: textField(req.headers['x-user-email'], 160).toLowerCase(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+
+    await Promise.all([
+      db.collection('team_invites').doc(email).set({
+        ...profile,
+        addedAt: FieldValue.serverTimestamp(),
+      }, { merge: true }),
+      db.collection('companies').doc(companyId).collection('users').doc(email).set({
+        ...profile,
+        addedAt: FieldValue.serverTimestamp(),
+      }, { merge: true }),
+      uid
+        ? db.collection('companies').doc(companyId).collection('users').doc(uid).set({
+            ...profile,
+            uid,
+            linkedAt: FieldValue.serverTimestamp(),
+          }, { merge: true })
+        : Promise.resolve(),
+      uid
+        ? db.collection('users').doc(uid).set({
+            ...profile,
+            uid,
+            updatedAt: FieldValue.serverTimestamp(),
+          }, { merge: true })
+        : Promise.resolve(),
+      db.collection('companies').doc(companyId).collection('audit_logs').add({
+        action: 'APP_ADMIN_ASSIGNED_COMPANY_ADMIN',
+        actorUserId: req.user.uid,
+        targetEmail: email,
+        targetUid: uid,
+        timestamp: FieldValue.serverTimestamp(),
+      }).catch(() => {}),
+    ]);
+
+    res.json({ success: true, uid, email, companyId });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to assign company admin' });
   }
 });
 

@@ -18,8 +18,10 @@ export function AppAdminPortalPage() {
   const [companies, setCompanies] = useState<any[]>([]);
   const [integrationRequests, setIntegrationRequests] = useState<any[]>([]);
   const [senderRequests, setSenderRequests] = useState<any[]>([]);
+  const [replyNumberRequests, setReplyNumberRequests] = useState<any[]>([]);
   const [supportTickets, setSupportTickets] = useState<any[]>([]);
   const [approvedSenderIds, setApprovedSenderIds] = useState<Record<string, string>>({});
+  const [assignedReplyNumbers, setAssignedReplyNumbers] = useState<Record<string, string>>({});
   const [adminNotes, setAdminNotes] = useState<Record<string, string>>({});
   const [supportReplies, setSupportReplies] = useState<Record<string, string>>({});
   const [savingSupportId, setSavingSupportId] = useState<string | null>(null);
@@ -36,6 +38,7 @@ export function AppAdminPortalPage() {
       setCompanies(response.data.companies || []);
       setIntegrationRequests(response.data.integrationRequests || []);
       setSenderRequests(response.data.smsSenderRequests || []);
+      setReplyNumberRequests(response.data.smsReplyNumberRequests || []);
       setSupportTickets(response.data.supportTickets || []);
     } catch (error: any) {
       toast.error(error.response?.data?.error || "Failed to load app admin portal");
@@ -61,6 +64,24 @@ export function AppAdminPortalPage() {
       await fetchPortal();
     } catch (error: any) {
       toast.error(error.response?.data?.error || "Failed to update sender request");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const updateReplyNumberStatus = async (request: any, status: "reviewing" | "active" | "rejected") => {
+    const assignedNumber = assignedReplyNumbers[request.id] || request.assignedNumber || "";
+    try {
+      setSavingId(request.id);
+      await axios.post(`/api/app-admin/sms-reply-number-requests/${request.id}/status`, {
+        status,
+        assignedNumber,
+        adminNotes: adminNotes[request.id] || "",
+      }, { headers });
+      toast.success(status === "active" ? "Reply number activated" : "Reply number request updated");
+      await fetchPortal();
+    } catch (error: any) {
+      toast.error(error.response?.data?.error || "Failed to update reply number request");
     } finally {
       setSavingId(null);
     }
@@ -135,6 +156,54 @@ export function AppAdminPortalPage() {
           <p className="text-sm text-zinc-500">Pending sender actions</p>
         </div>
       </div>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-bold text-zinc-900">Dedicated Reply Number Requests</h2>
+        <div className="grid gap-4">
+          {replyNumberRequests.map((request) => (
+            <div key={request.id} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-lg font-bold text-zinc-900">{request.companyName || request.companyId || "Reply Number Request"}</h3>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold uppercase ${request.status === "active" ? "bg-emerald-50 text-emerald-700" : request.status === "rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>
+                      {request.status || "pending"}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid gap-1 text-sm text-zinc-600 md:grid-cols-2">
+                    <span>Company ID: {request.companyId}</span>
+                    <span>Requested by: {request.actorEmail || request.actorUserId || "-"}</span>
+                    <span>Preferred area code: {request.preferredAreaCode || "-"}</span>
+                    <span>Assigned number: {request.assignedNumber || "-"}</span>
+                    <span>Requested: {formatDate(request.requestedAt)}</span>
+                    <span>Notes: {request.notes || "-"}</span>
+                  </div>
+                </div>
+                <div className="w-full space-y-2 lg:w-72">
+                  <input
+                    className="h-10 w-full rounded-xl border border-zinc-200 px-3 text-sm font-bold outline-none focus:border-zinc-400"
+                    placeholder="Assigned reply number"
+                    value={assignedReplyNumbers[request.id] ?? request.assignedNumber ?? ""}
+                    onChange={(event) => setAssignedReplyNumbers((current) => ({ ...current, [request.id]: event.target.value.slice(0, 40) }))}
+                  />
+                  <textarea
+                    className="min-h-20 w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                    placeholder="Admin notes"
+                    value={adminNotes[request.id] || ""}
+                    onChange={(event) => setAdminNotes((current) => ({ ...current, [request.id]: event.target.value }))}
+                  />
+                  <div className="grid grid-cols-3 gap-2">
+                    <Button size="sm" variant="outline" disabled={savingId === request.id} onClick={() => updateReplyNumberStatus(request, "reviewing")}>Review</Button>
+                    <Button size="sm" disabled={savingId === request.id} onClick={() => updateReplyNumberStatus(request, "active")}>Activate</Button>
+                    <Button size="sm" variant="outline" disabled={savingId === request.id} onClick={() => updateReplyNumberStatus(request, "rejected")}>Reject</Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+          {replyNumberRequests.length === 0 ? <div className="rounded-2xl border border-zinc-200 bg-white p-8 text-center text-sm text-zinc-500">No dedicated reply number requests yet.</div> : null}
+        </div>
+      </section>
 
       <section className="space-y-3">
         <h2 className="text-lg font-bold text-zinc-900">Support Tickets</h2>

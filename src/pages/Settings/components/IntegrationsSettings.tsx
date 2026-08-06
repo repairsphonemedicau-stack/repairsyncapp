@@ -377,6 +377,9 @@ export function IntegrationsSettings() {
   const [senderFormOpen, setSenderFormOpen] = useState(false);
   const [senderForm, setSenderForm] = useState(emptySenderRegistration);
   const [isSubmittingSender, setIsSubmittingSender] = useState(false);
+  const [replyNumberNotes, setReplyNumberNotes] = useState("");
+  const [replyNumberAreaCode, setReplyNumberAreaCode] = useState("");
+  const [isSubmittingReplyNumber, setIsSubmittingReplyNumber] = useState(false);
   const [capabilities, setCapabilities] = useState<IntegrationCapabilities>({
     managedMobileMessage: false,
     managedRepairShopr: false,
@@ -398,6 +401,9 @@ export function IntegrationsSettings() {
   const smsSenderStatus = settings?.integrations?.smsSenderStatus || "not_started";
   const smsSenderActive = smsSenderStatus === "active" && Boolean(settings?.integrations?.smsSenderApprovedId);
   const smsSenderPending = smsSenderStatus === "pending";
+  const smsReplyNumberStatus = settings?.integrations?.smsReplyNumberStatus || "not_started";
+  const smsReplyNumberActive = smsReplyNumberStatus === "active" && Boolean(settings?.integrations?.smsReplyNumberAssigned);
+  const smsReplyNumberPending = smsReplyNumberStatus === "pending";
 
   const requireProfessional = () => {
     toast.info("Professional subscription required", {
@@ -498,6 +504,36 @@ export function IntegrationsSettings() {
       });
     } finally {
       setIsSubmittingSender(false);
+    }
+  };
+
+  const handleRequestReplyNumber = async () => {
+    if (!isProfessional) {
+      requireProfessional();
+      return;
+    }
+    try {
+      setIsSubmittingReplyNumber(true);
+      const response = await axios.post("/api/company/sms-reply-number-request", {
+        companyId: profile?.companyId,
+        companyName: profile?.companyName,
+        preferredAreaCode: replyNumberAreaCode,
+        notes: replyNumberNotes,
+      });
+      if (response.data?.integrations) {
+        await updateSettings("integrations", response.data.integrations as any);
+      }
+      toast.success("Reply number request sent", {
+        description: "RepairSync support will assign and activate a dedicated reply number for this company.",
+      });
+      setReplyNumberAreaCode("");
+      setReplyNumberNotes("");
+    } catch (error: any) {
+      toast.error("Reply number request failed", {
+        description: error.response?.data?.error || error.message,
+      });
+    } finally {
+      setIsSubmittingReplyNumber(false);
     }
   };
 
@@ -726,6 +762,65 @@ export function IntegrationsSettings() {
                 Submit Request
               </Button>
             </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white p-5 rounded-2xl border border-zinc-200 shadow-sm">
+        <div className="flex items-start gap-4">
+          <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${smsReplyNumberActive ? 'bg-emerald-50 text-emerald-600' : smsReplyNumberPending ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>
+            {smsReplyNumberActive ? <CheckCircle2 className="w-5 h-5" /> : smsReplyNumberPending ? <Clock className="w-5 h-5" /> : <PhoneCall className="w-5 h-5" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-bold text-zinc-900">Dedicated SMS Reply Number</h3>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold uppercase ${smsReplyNumberActive ? 'bg-emerald-50 text-emerald-700' : smsReplyNumberPending ? 'bg-amber-50 text-amber-700' : 'bg-indigo-50 text-indigo-700'}`}>
+                {smsReplyNumberActive ? 'Active' : smsReplyNumberPending ? 'Pending setup' : 'Optional'}
+              </span>
+            </div>
+            <p className="mt-1 text-sm leading-5 text-zinc-500">
+              Request a dedicated SMS number so customers can reply to messages and replies can route back to this company.
+            </p>
+            {settings?.integrations?.smsReplyNumberAssigned && (
+              <p className="mt-2 text-xs font-semibold text-zinc-600">
+                Assigned reply number: {settings.integrations.smsReplyNumberAssigned}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {smsReplyNumberActive ? (
+          <Button className="mt-4 w-full" variant="outline">
+            <CheckCircle2 className="mr-2 h-4 w-4" />
+            Reply Number Active
+          </Button>
+        ) : smsReplyNumberPending ? (
+          <Button className="mt-4 w-full" variant="outline">
+            <Clock className="mr-2 h-4 w-4" />
+            Request Pending
+          </Button>
+        ) : (
+          <div className="mt-4 space-y-3">
+            <input
+              value={replyNumberAreaCode}
+              onChange={(event) => setReplyNumberAreaCode(event.target.value)}
+              className="h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-zinc-400"
+              placeholder="Preferred area code optional, e.g. 07"
+            />
+            <textarea
+              value={replyNumberNotes}
+              onChange={(event) => setReplyNumberNotes(event.target.value)}
+              className="min-h-20 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400"
+              placeholder="Optional notes for the reply number setup"
+            />
+            <Button
+              className="w-full"
+              onClick={handleRequestReplyNumber}
+              disabled={isSubmittingReplyNumber}
+            >
+              {!isProfessional ? <Lock className="mr-2 h-4 w-4" /> : isSubmittingReplyNumber ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <PhoneCall className="mr-2 h-4 w-4" />}
+              {!isProfessional ? "Switch to Professional" : "Request Reply Number"}
+            </Button>
           </div>
         )}
       </div>
