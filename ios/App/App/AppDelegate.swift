@@ -49,11 +49,19 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
         UNUserNotificationCenter.current().delegate = self
         SKPaymentQueue.default().add(self)
         configureGoogleSignIn()
-        showLoadingOverlay(message: "Loading RepairSync...")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            self.installGoogleSignInBridge(retryCount: 8)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.prepareHostedWrapper()
         }
         return true
+    }
+
+    func application(_ application: UIApplication,
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = SceneDelegate.self
+        configuration.storyboard = UIStoryboard(name: "Main", bundle: nil)
+        return configuration
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
@@ -71,11 +79,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        prepareHostedWrapper()
         if !hasCompletedInitialActivation {
             hasCompletedInitialActivation = true
             return
         }
-        hideLoadingOverlay(after: 0.1)
+        validateHostedAppRendered(after: 0.75)
+        hideLoadingOverlay(after: 2.0)
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
@@ -188,6 +198,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
         }
 
         self.webView = webView
+        webView.isOpaque = false
+        webView.backgroundColor = UIColor.white
+        webView.scrollView.backgroundColor = UIColor.white
         let userContentController = webView.configuration.userContentController
         userContentController.addUserScript(
             WKUserScript(
@@ -231,10 +244,32 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
         webView.evaluateJavaScript(nativeIAPShim(), completionHandler: nil)
         didInstallGoogleSignInBridge = true
         applyPendingNavigationIfNeeded()
-        validateHostedAppRendered(after: 4.0)
-        validateHostedAppRendered(after: 8.0)
-        hideLoadingOverlay(after: 12.0)
+        validateHostedAppRendered(after: 1.25)
+        validateHostedAppRendered(after: 3.5)
+        hideLoadingOverlay(after: 8.0)
         NSLog("RepairSync Google Sign-In: native bridge installed")
+    }
+
+    func attachSceneWindow(_ sceneWindow: UIWindow) {
+        window = sceneWindow
+        sceneWindow.backgroundColor = UIColor.white
+        prepareHostedWrapper()
+    }
+
+    func prepareSceneDidBecomeActive() {
+        prepareHostedWrapper()
+        validateHostedAppRendered(after: 0.75)
+        hideLoadingOverlay(after: 2.0)
+    }
+
+    private func prepareHostedWrapper() {
+        guard window != nil else {
+            return
+        }
+        if webView == nil || webView?.url == nil || webView?.url?.absoluteString == "about:blank" {
+            showLoadingOverlay(message: "Loading RepairSync...")
+        }
+        installGoogleSignInBridge(retryCount: 12)
     }
 
     private func showLoadingOverlay(message: String) {
@@ -694,11 +729,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
                 let looksBlank = textLength < 8 && rootChildren == 0
 
                 if isInitialBlankNavigation {
-                    NSLog("RepairSync iOS waiting for initial WebView navigation before recovery.")
-                    self.validateHostedAppRendered(after: 4.0)
+                    NSLog("RepairSync iOS waiting briefly for initial WebView navigation before recovery.")
+                    self.validateHostedAppRendered(after: 1.0)
                 } else if isHostedRepairSync && hasLoadingText && rootChildren > 0 {
                     NSLog("RepairSync iOS found hosted loading state; waiting without forced reload.")
-                    self.validateHostedAppRendered(after: 5.0)
+                    self.validateHostedAppRendered(after: 2.0)
                 } else if !isHostedRepairSync || looksBlank {
                     NSLog("RepairSync iOS detected blank WebView. href=\(href), textLength=\(textLength), rootChildren=\(rootChildren)")
                     self.forceLoadHostedApp(reason: looksBlank ? "blank-dom" : "wrong-url")
@@ -1224,4 +1259,32 @@ class AppDelegate: UIResponder, UIApplicationDelegate, WKScriptMessageHandler, U
         """
     }
 
+}
+
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene,
+               willConnectTo session: UISceneSession,
+               options connectionOptions: UIScene.ConnectionOptions) {
+        guard let windowScene = scene as? UIWindowScene else {
+            return
+        }
+
+        let storyboard = UIStoryboard(name: "Main", bundle: nil)
+        let rootViewController = storyboard.instantiateInitialViewController() ?? UIViewController()
+        rootViewController.view.backgroundColor = UIColor.white
+
+        let sceneWindow = UIWindow(windowScene: windowScene)
+        sceneWindow.backgroundColor = UIColor.white
+        sceneWindow.rootViewController = rootViewController
+        sceneWindow.makeKeyAndVisible()
+        window = sceneWindow
+
+        (UIApplication.shared.delegate as? AppDelegate)?.attachSceneWindow(sceneWindow)
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        (UIApplication.shared.delegate as? AppDelegate)?.prepareSceneDidBecomeActive()
+    }
 }
